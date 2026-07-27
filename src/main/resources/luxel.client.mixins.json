@@ -7,7 +7,7 @@
 		"ItemEntityMixin",
 		"LivingEntityMixin",
 		"PlayerEntityMixin",
-		"WorldChunkLuminanceMixin"
+		"BlockViewLuminanceMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1
