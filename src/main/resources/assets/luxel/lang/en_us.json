@@ -1,0 +1,16 @@
+{
+	"luxel.config.title": "Luxel Settings",
+	"luxel.config.mod_enabled": "Mod Enabled",
+	"luxel.config.dynamic_lights": "Dynamic Lights",
+	"luxel.config.other_players": "Other Players' Lights",
+	"luxel.config.mob_light": "Mob Lights",
+	"luxel.config.dropped_item_light": "Dropped Item Lights",
+	"luxel.config.colored_light": "Colored Light",
+	"luxel.config.performance_mode": "Performance Mode",
+	"luxel.config.shader_compat": "Shader Compatibility Mode",
+	"luxel.config.debug_mode": "Debug Mode",
+	"luxel.config.quality": "Light Quality",
+	"luxel.config.done": "Done",
+	"luxel.config.on": "On",
+	"luxel.config.off": "Off"
+}
