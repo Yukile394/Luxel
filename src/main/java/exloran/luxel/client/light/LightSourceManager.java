@@ -4,29 +4,38 @@ import exloran.luxel.Luxel;
 import exloran.luxel.client.config.LuxelConfig;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.particle.DustParticleEffect;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import org.joml.Vector3f;
 
 import java.util.HashSet;
 import java.util.Set;
 
 /**
  * Aktif dinamik isik kaynaklarini takip eden ve vanilla light-engine'e
- * (isik motoruna) her tick ihtiyac duyulan kadar guncelleme gonderen merkezi sinif.
+ * her tick ihtiyac duyulan kadar guncelleme gonderen merkezi sinif.
  * <p>
- * Performans stratejisi:
+ * BU SINIF, {@link LuxelConfig} icindeki HER AYARI gercekten okuyup uyguluyor:
  * <ul>
- *   <li>Sadece kameraya {@link LuxelConfig#maxLightDistance} icinde olan kaynaklar islenir.</li>
- *   <li>Bir kaynagin blok konumu degismedigi surece light-engine'e tekrar sinyal gonderilmez.</li>
- *   <li>{@link LuxelConfig#updateIntervalTicks} ile guncelleme sikligi dusurulebilir (performans modu).</li>
- *   <li>{@code activeLuminance} haritasi sadece "su an isik yayan" pozisyonlari tutar; bu sayede
- *       ChunkLightMixin O(1) lookup ile calisir.</li>
+ *   <li>{@code modEnabled} / {@code dynamicLightsEnabled} - motoru tamamen durdurur</li>
+ *   <li>{@code otherPlayersLight} - diger oyuncularin takip edilip edilmeyecegini,
+ *       hem ACMA hem KAPATMA yonunde canli olarak kontrol eder</li>
+ *   <li>{@code mobLight} - moblarin periyodik taranip takip listesine eklenmesini kontrol eder</li>
+ *   <li>{@code droppedItemLight} - yerdeki esyalarin periyodik taranmasini kontrol eder</li>
+ *   <li>{@code maxLightDistance} - kesin mesafe siniri (quality carpani ile birlikte)</li>
+ *   <li>{@code updateIntervalTicks} - guncelleme sikligi (quality carpani ile birlikte)</li>
+ *   <li>{@code lightQuality} - mesafe ve guncelleme sikligini gercekten olcekler</li>
+ *   <li>{@code performanceMode} - ek bir ust sinir/taban degeri zorlar</li>
+ *   <li>{@code coloredLight} - kaynagin rengine gore periyodik renkli parcacik yayar</li>
+ *   <li>{@code debugMode} - konsola detayli log basar</li>
  * </ul>
  */
 public final class LightSourceManager {
@@ -40,6 +49,10 @@ public final class LightSourceManager {
 	private final Long2IntOpenHashMap activeLuminance = new Long2IntOpenHashMap();
 
 	private int tickCounter = 0;
+	private int entityScanCounter = 0;
+
+	private static final int ENTITY_SCAN_INTERVAL_TICKS = 20;
+	private static final int PARTICLE_INTERVAL_TICKS = 6;
 
 	private LightSourceManager() {
 		activeLuminance.defaultReturnValue(0);
@@ -58,7 +71,7 @@ public final class LightSourceManager {
 	}
 
 	/**
-	 * ChunkLightMixin tarafindan cagirilir: verilen pozisyonda dinamik olarak
+	 * BlockViewLuminanceMixin tarafindan cagirilir: verilen pozisyonda dinamik olarak
 	 * enjekte edilmesi gereken isik seviyesini dondurur (yoksa 0).
 	 */
 	public int getDynamicLuminance(long packedPos) {
@@ -71,60 +84,95 @@ public final class LightSourceManager {
 
 	public void onClientTick(MinecraftClient client) {
 		LuxelConfig config = LuxelConfig.get();
-		if (!config.modEnabled || !config.dynamicLightsEnabled || client.world == null || client.player == null) {
+		ClientWorld world = client.world;
+		PlayerEntity camera = client.player;
+
+		if (!config.modEnabled || !config.dynamicLightsEnabled || world == null || camera == null) {
+			// Mod veya dinamik isiklar kapatildiysa, kalan tum isiklari temizle ki
+			// eski isiklar donuk sekilde ekranda takili kalmasin.
+			if (!activeLuminance.isEmpty()) {
+				clearAllLights(world);
+			}
 			return;
 		}
 
 		tickCounter++;
-		int interval = config.performanceMode ? Math.max(config.updateIntervalTicks, 3) : Math.max(config.updateIntervalTicks, 1);
+		int interval = effectiveInterval(config);
 		if (tickCounter % interval != 0) {
 			return;
 		}
 
-		World world = client.world;
-		PlayerEntity camera = client.player;
-
-		// Oyuncunun kendisi her zaman takip edilir.
+		// Yerel oyuncu her zaman takip edilir.
 		trackedSources.add(camera);
 
+		// Diger oyunculari canli olarak ekle/cikar (config her tick yeniden okunur).
 		if (config.otherPlayersLight) {
 			world.getPlayers().forEach(trackedSources::add);
 		}
 
-		trackedSources.removeIf(entity -> !isStillValid(entity, config));
+		// Mob ve dusen esyalari periyodik olarak tara (tam entity taramasi pahalidir,
+		// bu yuzden ayri, daha seyrek bir aralikla yapilir).
+		entityScanCounter++;
+		if ((config.mobLight || config.droppedItemLight) && entityScanCounter >= ENTITY_SCAN_INTERVAL_TICKS) {
+			entityScanCounter = 0;
+			scanForAdditionalSources(world, camera, config);
+		}
 
+		// Artik gecerli olmayan kaynaklari (config kapandi, entity yok oldu, mesafe disi) temizle.
+		trackedSources.removeIf(entity -> !isStillValid(entity, config, camera));
+
+		double maxDistSq = effectiveMaxDistance(config) * effectiveMaxDistance(config);
 		for (Entity entity : trackedSources) {
-			updateEntityLight(world, camera, entity, config);
+			updateEntityLight(world, camera, entity, config, maxDistSq);
 		}
 	}
 
-	private boolean isStillValid(Entity entity, LuxelConfig config) {
+	private void scanForAdditionalSources(ClientWorld world, PlayerEntity camera, LuxelConfig config) {
+		double radius = config.maxLightDistance;
+		double radiusSq = radius * radius;
+		for (Entity entity : world.getEntities()) {
+			if (entity.squaredDistanceTo(camera) > radiusSq) {
+				continue;
+			}
+			if (config.mobLight && entity instanceof LivingEntity && !(entity instanceof PlayerEntity)) {
+				trackedSources.add(entity);
+			} else if (config.droppedItemLight && entity instanceof ItemEntity) {
+				trackedSources.add(entity);
+			}
+		}
+	}
+
+	private boolean isStillValid(Entity entity, LuxelConfig config, PlayerEntity camera) {
 		if (entity == null || entity.isRemoved()) {
 			return false;
 		}
-		if (entity instanceof PlayerEntity) {
+		if (entity == camera) {
 			return true;
 		}
-		if (entity instanceof LivingEntity) {
-			return config.mobLight;
+		if (entity instanceof PlayerEntity) {
+			return config.otherPlayersLight;
 		}
 		if (entity instanceof ItemEntity) {
 			return config.droppedItemLight;
 		}
+		if (entity instanceof LivingEntity) {
+			return config.mobLight;
+		}
 		return false;
 	}
 
-	private void updateEntityLight(World world, PlayerEntity camera, Entity entity, LuxelConfig config) {
+	private void updateEntityLight(World world, PlayerEntity camera, Entity entity, LuxelConfig config, double maxDistSq) {
 		if (!(entity instanceof DynamicLightSource source)) {
 			return;
 		}
 
 		double distanceSq = entity.squaredDistanceTo(camera);
-		double maxDistSq = (double) config.maxLightDistance * config.maxLightDistance;
 
 		int newLevel = 0;
+		LightEntry entry = null;
 		if (distanceSq <= maxDistSq) {
-			newLevel = computeLuminance(entity, config);
+			entry = computeLightEntry(entity);
+			newLevel = entry == null ? 0 : entry.level();
 		}
 
 		long oldPos = source.luxel$getLastLightPos();
@@ -135,51 +183,64 @@ public final class LightSourceManager {
 		boolean posChanged = oldPos != newPos;
 		boolean levelChanged = oldLevel != newLevel;
 
-		if (!posChanged && !levelChanged) {
-			return;
+		if (posChanged || levelChanged) {
+			if (oldLevel > 0) {
+				activeLuminance.remove(oldPos);
+				scheduleLightUpdate(world, oldPos);
+			}
+			if (newLevel > 0) {
+				addContribution(newPos, newLevel);
+				scheduleLightUpdate(world, newPos);
+			}
+			source.luxel$setLuminance(newLevel);
+			source.luxel$setLastLightPos(newPos);
+
+			if (config.debugMode) {
+				Luxel.LOGGER.info("[Luxel] {} -> seviye={} pos={}", entity.getName().getString(), newLevel, newBlockPos);
+			}
 		}
 
-		// Eski pozisyondaki katkiyi kaldir.
-		if (oldLevel > 0) {
-			removeContribution(oldPos, oldLevel);
-			scheduleLightUpdate(world, oldPos);
-		}
-
-		// Yeni pozisyona katkiyi ekle.
-		if (newLevel > 0) {
-			addContribution(newPos, newLevel);
-			scheduleLightUpdate(world, newPos);
-		}
-
-		source.luxel$setLuminance(newLevel);
-		source.luxel$setLastLightPos(newPos);
-
-		if (config.debugMode) {
-			Luxel.LOGGER.info("[Luxel] {} -> seviye={} pos={}", entity.getName().getString(), newLevel, newBlockPos);
+		if (config.coloredLight && newLevel > 0 && entry != null && world instanceof ClientWorld clientWorld) {
+			maybeSpawnColorParticle(clientWorld, entity, entry.colorRgb());
 		}
 	}
 
-	private int computeLuminance(Entity entity, LuxelConfig config) {
+	private void maybeSpawnColorParticle(ClientWorld world, Entity entity, int colorRgb) {
+		if (tickCounter % PARTICLE_INTERVAL_TICKS != 0) {
+			return;
+		}
+		float r = ((colorRgb >> 16) & 0xFF) / 255f;
+		float g = ((colorRgb >> 8) & 0xFF) / 255f;
+		float b = (colorRgb & 0xFF) / 255f;
+		DustParticleEffect effect = new DustParticleEffect(new Vector3f(r, g, b), 1.0f);
+		world.addParticle(effect,
+				entity.getX() + (world.random.nextDouble() - 0.5) * 0.4,
+				entity.getY() + 0.3 + world.random.nextDouble() * 0.3,
+				entity.getZ() + (world.random.nextDouble() - 0.5) * 0.4,
+				0.0, 0.01, 0.0);
+	}
+
+	private LightEntry computeLightEntry(Entity entity) {
 		if (entity instanceof ItemEntity itemEntity) {
-			LightEntry entry = ItemLightRegistry.get(itemEntity.getStack().getItem());
-			return entry == null ? 0 : entry.level();
+			return ItemLightRegistry.get(itemEntity.getStack().getItem());
 		}
 
 		if (entity instanceof LivingEntity living) {
-			int main = luminanceOf(living.getMainHandStack());
-			int off = luminanceOf(living.getOffHandStack());
-			return Math.max(main, off);
+			LightEntry main = entryOf(living.getMainHandStack());
+			LightEntry off = entryOf(living.getOffHandStack());
+			if (main == null) return off;
+			if (off == null) return main;
+			return main.level() >= off.level() ? main : off;
 		}
 
-		return 0;
+		return null;
 	}
 
-	private int luminanceOf(ItemStack stack) {
+	private LightEntry entryOf(ItemStack stack) {
 		if (stack == null || stack.isEmpty() || stack.getItem() == Items.AIR) {
-			return 0;
+			return null;
 		}
-		LightEntry entry = ItemLightRegistry.get(stack.getItem());
-		return entry == null ? 0 : entry.level();
+		return ItemLightRegistry.get(stack.getItem());
 	}
 
 	private void addContribution(long pos, int level) {
@@ -189,21 +250,56 @@ public final class LightSourceManager {
 		}
 	}
 
-	private void removeContribution(long pos, int level) {
-		// Basit ve guvenli yaklasim: pozisyonu tamamen sifirlayip, o pozisyonu
-		// hala kullanan baska kaynak varsa bir sonraki tick'te tekrar yazilmasini sagliyoruz.
-		// Bu, ayni blokta ust uste binen isik kaynaklari icin bir tick'lik gecikmeye
-		// yol acabilir ama titremeyi (flicker) engelleyen guvenli tercih budur.
-		activeLuminance.remove(pos);
-	}
-
 	private void scheduleLightUpdate(World world, long pos) {
-		// Vanilla light-engine'e bu pozisyonu yeniden hesaplamasi icin sinyal veriyoruz.
-		// Gercek isik degeri ChunkLuminanceMixin uzerinden bu sinifa (getDynamicLuminance)
-		// sorularak alinir. Yarn surumune gore metod adi degisebilir; derleme hatasi
-		// alinirsa README'deki "Isik Motoru Notu" bolumune bakin.
 		BlockPos blockPos = BlockPos.fromLong(pos);
 		world.getChunkManager().getLightingProvider().checkBlock(blockPos);
+	}
+
+	/**
+	 * lightQuality ayarinin GERCEKTEN etkili oldugu yer: dusuk kalite daha kisa
+	 * mesafe ve daha seyrek guncelleme, ultra ise tam tersi anlamina gelir.
+	 */
+	private int effectiveInterval(LuxelConfig config) {
+		int qualityFactor = switch (config.lightQuality) {
+			case LOW -> 3;
+			case MEDIUM -> 2;
+			case HIGH -> 1;
+			case ULTRA -> 1;
+		};
+		int base = Math.max(config.updateIntervalTicks, 1) * qualityFactor;
+		if (config.performanceMode) {
+			base = Math.max(base, 3);
+		}
+		return base;
+	}
+
+	private double effectiveMaxDistance(LuxelConfig config) {
+		double qualityFactor = switch (config.lightQuality) {
+			case LOW -> 0.5;
+			case MEDIUM -> 0.75;
+			case HIGH -> 1.0;
+			case ULTRA -> 1.25;
+		};
+		double distance = Math.max(config.maxLightDistance, 1) * qualityFactor;
+		if (config.performanceMode) {
+			distance = Math.min(distance, 16.0);
+		}
+		return distance;
+	}
+
+	private void clearAllLights(World world) {
+		if (world == null) {
+			for (long pos : activeLuminance.keySet().toLongArray()) {
+				activeLuminance.remove(pos);
+			}
+			activeLuminance.clear();
+			return;
+		}
+		for (long pos : activeLuminance.keySet().toLongArray()) {
+			scheduleLightUpdate(world, pos);
+		}
+		activeLuminance.clear();
+		trackedSources.clear();
 	}
 
 	public void clear() {
