@@ -1,0 +1,15 @@
+{
+	"required": true,
+	"minVersion": "0.8",
+	"package": "exloran.luxel.client.mixin",
+	"compatibilityLevel": "JAVA_21",
+	"client": [
+		"ItemEntityMixin",
+		"LivingEntityMixin",
+		"PlayerEntityMixin",
+		"WorldChunkLuminanceMixin"
+	],
+	"injectors": {
+		"defaultRequire": 1
+	}
+}

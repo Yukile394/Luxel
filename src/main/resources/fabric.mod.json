@@ -1,0 +1,37 @@
+{
+	"schemaVersion": 1,
+	"id": "luxel",
+	"version": "${version}",
+	"name": "Luxel",
+	"description": "OptiFine veya Shader gerektirmeden, tamamen client-side calisan yuksek performansli dinamik isik modu.",
+	"authors": [
+		"Yukile"
+	],
+	"contact": {
+		"homepage": "https://modrinth.com/mod/luxel",
+		"issues": "https://github.com/exloran/luxel/issues"
+	},
+	"license": "MIT",
+	"icon": "assets/luxel/icon.png",
+	"environment": "client",
+	"entrypoints": {
+		"client": [
+			"exloran.luxel.client.LuxelClient"
+		],
+		"modmenu": [
+			"exloran.luxel.client.config.LuxelModMenuIntegration"
+		]
+	},
+	"mixins": [
+		"luxel.client.mixins.json"
+	],
+	"depends": {
+		"fabricloader": ">=0.16.9",
+		"fabric-api": "*",
+		"minecraft": "~1.21.4",
+		"java": ">=21"
+	},
+	"suggests": {
+		"modmenu": "*"
+	}
+}
