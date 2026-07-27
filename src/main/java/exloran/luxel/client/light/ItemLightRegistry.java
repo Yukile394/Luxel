@@ -52,9 +52,7 @@ public final class ItemLightRegistry {
 	 */
 	public static void bootstrapDefaults() {
 		register(Items.TORCH, 14);
-		register(Items.WALL_TORCH, 14);
 		register(Items.SOUL_TORCH, 10, LightEntry.SOUL_BLUE);
-		register(Items.SOUL_WALL_TORCH, 10, LightEntry.SOUL_BLUE);
 		register(Items.LANTERN, 15);
 		register(Items.SOUL_LANTERN, 10, LightEntry.SOUL_BLUE);
 		register(Items.CAMPFIRE, 15);
@@ -63,7 +61,6 @@ public final class ItemLightRegistry {
 		register(Items.SEA_LANTERN, 15, LightEntry.SEA_CYAN);
 		register(Items.JACK_O_LANTERN, 15);
 		register(Items.REDSTONE_TORCH, 7);
-		register(Items.REDSTONE_WALL_TORCH, 7);
 		register(Items.END_ROD, 14);
 		register(Items.BLAZE_ROD, 12, LightEntry.LAVA_ORANGE);
 		register(Items.BLAZE_POWDER, 8, LightEntry.LAVA_ORANGE);
