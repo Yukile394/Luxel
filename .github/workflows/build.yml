@@ -1,14 +1,16 @@
-name: Build
+name: Build (1.21 - 1.21.11 matrix)
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-  workflow_dispatch:
 
 jobs:
   build:
+    strategy:
+      fail-fast: false
+      matrix:
+        minecraft: ["1.21", "1.21.1", "1.21.2", "1.21.3", "1.21.4", "1.21.5", "1.21.6", "1.21.7", "1.21.8", "1.21.9", "1.21.10", "1.21.11"]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -28,8 +30,36 @@ jobs:
               https://raw.githubusercontent.com/gradle/gradle/v8.10.0/gradle/wrapper/gradle-wrapper.jar
           fi
 
-      - name: Setup Gradle (cache only, kurulum yok)
+      - name: Setup Gradle (cache only)
         uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve yarn/loader/fabric-api for ${{ matrix.minecraft }}
+        run: |
+          set -e
+          MC="${{ matrix.minecraft }}"
+
+          YARN=$(curl -sSL "https://meta.fabricmc.net/v2/versions/yarn/$MC" | jq -r '.[0].version')
+          LOADER=$(curl -sSL "https://meta.fabricmc.net/v2/versions/loader" | jq -r '.[0].version')
+          FABRIC_API=$(curl -sSL "https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml" \
+            | grep -oE "<version>[^<]+\+${MC//./\\.}</version>" \
+            | sed -E 's/<version>(.*)<\/version>/\1/' \
+            | tail -n1)
+
+          if [ -z "$YARN" ] || [ "$YARN" = "null" ]; then
+            echo "::error::Bu Minecraft surumu icin Yarn mapping bulunamadi: $MC"
+            exit 1
+          fi
+          if [ -z "$FABRIC_API" ]; then
+            echo "::error::Bu Minecraft surumu icin Fabric API bulunamadi: $MC"
+            exit 1
+          fi
+
+          echo "MC=$MC  YARN=$YARN  LOADER=$LOADER  FABRIC_API=$FABRIC_API"
+
+          sed -i "s/^minecraft_version=.*/minecraft_version=$MC/" gradle.properties
+          sed -i "s/^yarn_mappings=.*/yarn_mappings=$YARN/" gradle.properties
+          sed -i "s/^loader_version=.*/loader_version=$LOADER/" gradle.properties
+          sed -i "s/^fabric_version=.*/fabric_version=$FABRIC_API/" gradle.properties
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
@@ -38,7 +68,9 @@ jobs:
         run: ./gradlew build --stacktrace
 
       - name: Upload artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: luxel-jar
+          name: luxel-${{ matrix.minecraft }}
           path: build/libs/*.jar
+          if-no-files-found: ignore
